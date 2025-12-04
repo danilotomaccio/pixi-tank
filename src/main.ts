@@ -116,7 +116,7 @@ function setupSocket() {
   if (socket) return; // Already connected
 
   // Connect to the server
-  socket = io('http://localhost:3000');
+  socket = io('http://130.110.13.34:3000');
 
   socket.on('connect', () => {
     console.log('Connected to server');

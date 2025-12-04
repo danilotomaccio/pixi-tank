@@ -8,6 +8,11 @@ import { fileURLToPath } from 'url';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
+const MAPS_DIR = path.join(__dirname, 'maps');
+if (!fs.existsSync(MAPS_DIR)) {
+    fs.mkdirSync(MAPS_DIR);
+}
+
 const app = express();
 const httpServer = createServer(app);
 const io = new Server(httpServer, {
@@ -191,18 +196,6 @@ io.on('connection', (socket: Socket) => {
             io.to(currentRoomId).emit('gameReset', { players: room.players, obstacles: room.obstacles });
         }
     });
-
-    import * as fs from 'fs';
-    import * as path from 'path';
-
-    // ... (existing imports)
-
-    const MAPS_DIR = path.join(__dirname, 'maps');
-    if (!fs.existsSync(MAPS_DIR)) {
-        fs.mkdirSync(MAPS_DIR);
-    }
-
-    // ... (existing code)
 
     socket.on('saveMap', (payload: { name: string, data: any[] }) => {
         const filePath = path.join(MAPS_DIR, `${payload.name}.json`);
