@@ -7,7 +7,7 @@
     "dev": "vite",
     "build": "tsc && vite build",
     "preview": "vite preview",
-    "server": "tsx server.ts"
+    "server": "tsx watch server.ts"
   },
   "devDependencies": {
     "@types/express": "^5.0.6",

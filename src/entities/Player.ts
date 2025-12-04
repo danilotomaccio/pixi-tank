@@ -1,18 +1,22 @@
+
 import * as PIXI from 'pixi.js';
 import { textures } from '../utils/AssetLoader';
 
 export class Player extends PIXI.Container {
     public id: string;
     public body: PIXI.Sprite;
-    public turret: PIXI.Sprite;
+    public turret: PIXI.Container;
     public speed: number = 3;
-    private keys: Record<string, boolean> = {};
+    public isLocal: boolean;
+    private keys: any = {};
     private app: PIXI.Application;
+    private healthBar: PIXI.Graphics;
 
-    constructor(id: string, app: PIXI.Application, isLocal: boolean = false, color: 'blue' | 'red' = 'blue') {
+    constructor(id: string, app: PIXI.Application, isLocal: boolean, color: 'blue' | 'red') {
         super();
         this.id = id;
         this.app = app;
+        this.isLocal = isLocal;
 
         // Create Body
         const bodyTexture = textures[`tankBody_${color}.png`];
@@ -20,22 +24,29 @@ export class Player extends PIXI.Container {
         this.body.anchor.set(0.5);
         this.addChild(this.body);
 
-        // Create Turret
+        // Turret
+        this.turret = new PIXI.Container();
         const turretTexture = textures[`tank${color === 'blue' ? 'Blue' : 'Red'}_barrel1.png`];
-        this.turret = new PIXI.Sprite(turretTexture);
-        this.turret.anchor.set(0.5, 1.0); // Anchor at the bottom (pivot point)
+        const turretSprite = new PIXI.Sprite(turretTexture);
+        turretSprite.anchor.set(0.5, 0.75); // Pivot at back of turret
+        this.turret.addChild(turretSprite);
         this.addChild(this.turret);
+
+        // Health Bar
+        this.healthBar = new PIXI.Graphics();
+        this.healthBar.y = -40;
+        this.addChild(this.healthBar);
+        this.updateHealth(10, 10);
 
         if (isLocal) {
             this.setupInput();
-            this.app.ticker.add(this.update.bind(this));
         }
     }
 
     private setupInput(): void {
-        window.addEventListener('keydown', (e) => this.keys[e.key.toLowerCase()] = true);
-        window.addEventListener('keyup', (e) => this.keys[e.key.toLowerCase()] = false);
-        window.addEventListener('mousedown', () => {
+        const onKeyDown = (e: KeyboardEvent) => this.keys[e.key.toLowerCase()] = true;
+        const onKeyUp = (e: KeyboardEvent) => this.keys[e.key.toLowerCase()] = false;
+        const onMouseDown = () => {
             if (this.app.canvas) {
                 this.emit('shoot', {
                     x: this.x,
@@ -44,10 +55,28 @@ export class Player extends PIXI.Container {
                     ownerId: this.id
                 });
             }
-        });
+        };
+
+        window.addEventListener('keydown', onKeyDown);
+        window.addEventListener('keyup', onKeyUp);
+        window.addEventListener('mousedown', onMouseDown);
+
+        // Store cleanup function
+        (this as any).cleanupInput = () => {
+            window.removeEventListener('keydown', onKeyDown);
+            window.removeEventListener('keyup', onKeyUp);
+            window.removeEventListener('mousedown', onMouseDown);
+        };
     }
 
-    public update(): void {
+    public destroy(options?: any) {
+        if ((this as any).cleanupInput) {
+            (this as any).cleanupInput();
+        }
+        super.destroy(options);
+    }
+
+    public update(obstacles: PIXI.Sprite[]): void {
         let dx = 0;
         let dy = 0;
 
@@ -62,8 +91,31 @@ export class Player extends PIXI.Container {
             dx /= length;
             dy /= length;
 
-            this.x += dx * this.speed;
-            this.y += dy * this.speed;
+            const nextX = this.x + dx * this.speed;
+            const nextY = this.y + dy * this.speed;
+
+            // Check collision with obstacles
+            let collision = false;
+            const tankRadius = 19; // 38/2
+            const obstacleRadius = 14; // 28/2
+
+            for (const obstacle of obstacles) {
+                const dist = Math.sqrt(Math.pow(nextX - obstacle.x, 2) + Math.pow(nextY - obstacle.y, 2));
+                if (dist < tankRadius + obstacleRadius) {
+                    collision = true;
+                    break;
+                }
+            }
+
+            // Check canvas boundaries
+            if (nextX < tankRadius || nextX > this.app.screen.width - tankRadius || nextY < tankRadius || nextY > this.app.screen.height - tankRadius) {
+                collision = true;
+            }
+
+            if (!collision) {
+                this.x = nextX;
+                this.y = nextY;
+            }
 
             // Rotate body to face movement direction
             this.body.rotation = Math.atan2(dy, dx) + Math.PI / 2;
@@ -83,5 +135,18 @@ export class Player extends PIXI.Container {
         this.y = y;
         this.body.rotation = bodyRotation;
         this.turret.rotation = turretRotation;
+    }
+
+    public updateHealth(current: number, max: number) {
+        this.healthBar.clear();
+
+        // Background (Red)
+        this.healthBar.rect(-20, 0, 40, 5);
+        this.healthBar.fill(0xff0000);
+
+        // Foreground (Green)
+        const percent = Math.max(0, current / max);
+        this.healthBar.rect(-20, 0, 40 * percent, 5);
+        this.healthBar.fill(0x00ff00);
     }
 }
