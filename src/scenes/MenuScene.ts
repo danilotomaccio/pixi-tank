@@ -9,13 +9,14 @@ export class MenuScene extends PIXI.Container {
     private player: Player;
     private buttons: ButtonBlock[] = [];
     private bullets: Bullet[] = [];
-    private onStartGame: () => void;
+    private onStartGame: (config: { mapData?: any, powerUpCount: number }) => void;
     private onJoinGame: (roomId: string) => void;
     private onStartEditor: () => void;
     private statusText: PIXI.Text;
     private socket: any;
+    private configModal: HTMLDivElement | null = null;
 
-    constructor(app: PIXI.Application, onStartGame: () => void, onJoinGame: (roomId: string) => void, onStartEditor: () => void, socket: any) {
+    constructor(app: PIXI.Application, onStartGame: (config: { mapData?: any, powerUpCount: number }) => void, onJoinGame: (roomId: string) => void, onStartEditor: () => void, socket: any) {
         super();
         this.app = app;
         this.onStartGame = onStartGame;
@@ -70,6 +71,102 @@ export class MenuScene extends PIXI.Container {
 
         this.buttons.push(btn1, btn2, btn3, btn4);
         this.addChild(btn1, btn2, btn3, btn4);
+    }
+
+    private showConfigModal() {
+        if (this.configModal) return;
+
+        this.configModal = document.createElement('div');
+        this.configModal.style.position = 'absolute';
+        this.configModal.style.top = '50%';
+        this.configModal.style.left = '50%';
+        this.configModal.style.transform = 'translate(-50%, -50%)';
+        this.configModal.style.backgroundColor = 'rgba(0, 0, 0, 0.9)';
+        this.configModal.style.padding = '20px';
+        this.configModal.style.borderRadius = '10px';
+        this.configModal.style.color = 'white';
+        this.configModal.style.display = 'flex';
+        this.configModal.style.flexDirection = 'column';
+        this.configModal.style.gap = '10px';
+        this.configModal.style.zIndex = '1000';
+
+        const title = document.createElement('h2');
+        title.innerText = 'Match Configuration';
+        this.configModal.appendChild(title);
+
+        // Power-up Count
+        const powerUpContainer = document.createElement('div');
+        powerUpContainer.innerHTML = '<label>Total Power-ups: </label>';
+        const powerUpInput = document.createElement('input');
+        powerUpInput.type = 'number';
+        powerUpInput.value = '10';
+        powerUpInput.min = '0';
+        powerUpInput.max = '50';
+        powerUpContainer.appendChild(powerUpInput);
+        this.configModal.appendChild(powerUpContainer);
+
+        // Map Upload
+        const mapContainer = document.createElement('div');
+        mapContainer.innerHTML = '<label>Load Map (Optional): </label>';
+        const mapInput = document.createElement('input');
+        mapInput.type = 'file';
+        mapInput.accept = '.json';
+        mapContainer.appendChild(mapInput);
+        this.configModal.appendChild(mapContainer);
+
+        let loadedMapData: any = null;
+        mapInput.onchange = (e: any) => {
+            const file = e.target.files[0];
+            if (file) {
+                const reader = new FileReader();
+                reader.onload = (ev) => {
+                    try {
+                        loadedMapData = JSON.parse(ev.target?.result as string);
+                    } catch (err) {
+                        alert('Invalid Map File');
+                        mapInput.value = '';
+                        loadedMapData = null;
+                    }
+                };
+                reader.readAsText(file);
+            } else {
+                loadedMapData = null;
+            }
+        };
+
+        // Buttons
+        const btnContainer = document.createElement('div');
+        btnContainer.style.display = 'flex';
+        btnContainer.style.gap = '10px';
+        btnContainer.style.marginTop = '10px';
+
+        const startBtn = document.createElement('button');
+        startBtn.innerText = 'Start Match';
+        startBtn.onclick = () => {
+            const count = parseInt(powerUpInput.value) || 0;
+            this.destroyModal();
+            this.destroyScene();
+            this.onStartGame({ mapData: loadedMapData, powerUpCount: count });
+        };
+
+        const cancelBtn = document.createElement('button');
+        cancelBtn.innerText = 'Cancel';
+        cancelBtn.onclick = () => {
+            this.destroyModal();
+        };
+
+        btnContainer.appendChild(startBtn);
+        btnContainer.appendChild(cancelBtn);
+        this.configModal.appendChild(btnContainer);
+
+        document.body.appendChild(this.configModal);
+    }
+
+    private destroyModal() {
+        if (this.configModal && this.configModal.parentNode) {
+            this.configModal.parentNode.removeChild(this.configModal);
+        }
+        this.configModal = null;
     }
 
     public update() {
@@ -131,8 +228,7 @@ export class MenuScene extends PIXI.Container {
 
     private handleButtonAction(btn: ButtonBlock) {
         if (btn.type === 'new-match') {
-            this.destroyScene();
-            this.onStartGame();
+            this.showConfigModal();
         } else if (btn.type === 'join-match') {
             const roomId = prompt("Enter Room Code:");
             if (roomId) {
@@ -146,6 +242,7 @@ export class MenuScene extends PIXI.Container {
     }
 
     public destroyScene() {
+        this.destroyModal();
         this.app.ticker.remove(this.update, this);
         this.destroy({ children: true });
     }

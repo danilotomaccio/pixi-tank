@@ -43,7 +43,10 @@ export class EditorUI {
 
         const saveBtn = document.createElement('button');
         saveBtn.innerText = 'Save Map';
-        saveBtn.onclick = this.onSave;
+        saveBtn.onclick = () => {
+            console.log('EditorUI: Save button clicked');
+            this.onSave();
+        };
 
         const loadBtn = document.createElement('button');
         loadBtn.innerText = 'Load Map';

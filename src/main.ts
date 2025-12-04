@@ -15,6 +15,7 @@ let socket: Socket;
 let players: Record<string, Player> = {};
 let bullets: Record<string, Bullet> = {};
 let obstacles: Record<string, PIXI.Sprite> = {};
+let powerUps: Record<string, PIXI.Container> = {}; // Changed to Container to support Text or Sprite
 let myId: string | null = null;
 let gameLoop: ((ticker: PIXI.Ticker) => void) | null = null;
 
@@ -49,20 +50,38 @@ function createBackground() {
 }
 
 function startMenu() {
+  // Cleanup stage
+  while (app.stage.children.length > 0) {
+    const child = app.stage.children[0];
+    if ((child as any).destroy) {
+      (child as any).destroy({ children: true });
+    } else {
+      app.stage.removeChild(child);
+    }
+  }
+  createBackground(); // Re-add background
+
   setupSocket(); // Ensure socket is initialized
-  const menu = new MenuScene(app, () => startGame('create'), (roomId) => startGame('join', roomId), startEditor, socket);
+  const menu = new MenuScene(app, (config) => startGame('create', undefined, config), (roomId) => startGame('join', roomId), startEditor, socket);
   app.stage.addChild(menu);
 }
 
 function startEditor() {
+  // Cleanup stage
+  while (app.stage.children.length > 0) {
+    const child = app.stage.children[0];
+    if ((child as any).destroy) {
+      (child as any).destroy({ children: true });
+    } else {
+      app.stage.removeChild(child);
+    }
+  }
+  createBackground(); // Re-add background
+
   setupSocket(); // Ensure socket is connected
   const editor = new EditorScene(app, startMenu);
   app.stage.addChild(editor);
 
-  // Inject socket methods into editor (hacky but works for now without refactoring EditorScene signature too much)
-  (editor as any).saveMap = (name: string, data: any) => {
-    socket.emit('saveMap', { name, data });
-  };
   (editor as any).loadMap = (name: string) => {
     socket.emit('loadMap', name);
   };
@@ -77,12 +96,23 @@ function startEditor() {
   });
 }
 
-function startGame(mode: 'create' | 'join', roomId?: string) {
+function startGame(mode: 'create' | 'join', roomId?: string, config?: { mapData?: any, powerUpCount: number }) {
+  // Cleanup stage
+  while (app.stage.children.length > 0) {
+    const child = app.stage.children[0];
+    if ((child as any).destroy) {
+      (child as any).destroy({ children: true });
+    } else {
+      app.stage.removeChild(child);
+    }
+  }
+  createBackground(); // Re-add background
+
   // Connect to Server
   setupSocket();
 
   if (mode === 'create') {
-    socket.emit('createRoom');
+    socket.emit('createRoom', config);
   } else if (mode === 'join' && roomId) {
     socket.emit('joinRoom', roomId);
   }
@@ -117,7 +147,7 @@ function setupSocket() {
   if (socket) return; // Already connected
 
   // Connect to the server
-  socket = io('http://130.110.13.34:3000');
+  socket = io('http://172.20.76.129:3000');
 
   socket.on('connect', () => {
     console.log('Connected to server');
@@ -146,6 +176,10 @@ function setupSocket() {
       app.stage.removeChild(obstacles[id]);
       delete obstacles[id];
     });
+    Object.keys(powerUps).forEach(id => {
+      app.stage.removeChild(powerUps[id]);
+      delete powerUps[id];
+    });
 
     // Load room state
     Object.keys(data.players).forEach(id => {
@@ -154,6 +188,9 @@ function setupSocket() {
     data.obstacles.forEach((obs: any) => {
       createObstacle(obs);
     });
+    if (data.powerUps) {
+      data.powerUps.forEach((pu: any) => createPowerUp(pu));
+    }
   });
 
   socket.on('error', (msg: string) => {
@@ -189,10 +226,13 @@ function setupSocket() {
     });
   });
 
-  socket.on('bulletFired', (bulletInfo: any) => {
+  socket.on('newBullet', (bulletInfo: any) => {
     const bullet = new Bullet(bulletInfo.id, bulletInfo.ownerId, bulletInfo.x, bulletInfo.y, bulletInfo.rotation);
     bullets[bullet.id] = bullet;
     app.stage.addChild(bullet);
+    if (players[bulletInfo.ownerId]) {
+      players[bulletInfo.ownerId].showMuzzleFlash();
+    }
   });
 
   socket.on('bulletExploded', (info: any) => {
@@ -242,10 +282,21 @@ function setupSocket() {
     });
     obstacles = {};
 
+    // Clear power-ups
+    Object.keys(powerUps).forEach(id => {
+      app.stage.removeChild(powerUps[id]);
+    });
+    powerUps = {};
+
     // Recreate obstacles
     data.obstacles.forEach((obs: any) => {
       createObstacle(obs);
     });
+
+    // Recreate power-ups
+    if (data.powerUps) {
+      data.powerUps.forEach((pu: any) => createPowerUp(pu));
+    }
 
     // Update players
     Object.keys(data.players).forEach(id => {
@@ -254,6 +305,47 @@ function setupSocket() {
         players[id].y = data.players[id].y;
       }
     });
+  });
+
+  socket.on('powerUpSpawned', (powerUpInfo: any) => {
+    createPowerUp(powerUpInfo);
+  });
+
+  socket.on('powerUpCollected', (id: string) => {
+    if (powerUps[id]) {
+      app.stage.removeChild(powerUps[id]);
+      delete powerUps[id];
+    }
+  });
+
+  socket.on('powerUpAutoCollected', (data: { playerId: string, type: string, x: number, y: number }) => {
+    animatePowerUpCollection(data);
+  });
+
+  socket.on('statUpdate', (data: { id: string, stat: string, value: number, duration: number }) => {
+    if (players[data.id]) {
+      if (data.stat === 'speed') {
+        players[data.id].setSpeed(data.value);
+        if (data.duration > 0) {
+          players[data.id].addStatusEffect('SPD', data.duration); // Add visual effect
+          setTimeout(() => {
+            if (players[data.id]) players[data.id].setSpeed(3); // Revert to default
+          }, data.duration);
+        }
+      } else if (data.stat === 'machineGun') {
+        players[data.id].setMachineGun(true);
+        players[data.id].addStatusEffect('MG', data.duration);
+        setTimeout(() => {
+          if (players[data.id]) players[data.id].setMachineGun(false);
+        }, data.duration);
+      }
+    }
+  });
+
+  socket.on('armorUpdate', (data: { id: string, value: number }) => {
+    if (players[data.id]) {
+      players[data.id].setArmor(data.value);
+    }
   });
 }
 
@@ -265,6 +357,80 @@ function createObstacle(info: any) {
   sprite.anchor.set(0.5);
   obstacles[info.id] = sprite;
   app.stage.addChild(sprite);
+}
+
+function createPowerUp(pu: any) {
+  const text = new PIXI.Text({
+    text: pu.type,
+    style: {
+      fontFamily: 'Arial',
+      fontSize: 20,
+      fontWeight: 'bold',
+      fill: getPowerUpColor(pu.type),
+      stroke: { color: 0x000000, width: 3 }
+    }
+  });
+  text.x = pu.x;
+  text.y = pu.y;
+  text.anchor.set(0.5);
+  powerUps[pu.id] = text;
+  app.stage.addChild(text);
+}
+
+function animatePowerUpCollection(data: { playerId: string, type: string, x: number, y: number }) {
+  const targetPlayer = players[data.playerId];
+  if (!targetPlayer) return;
+
+  const text = new PIXI.Text({
+    text: data.type,
+    style: {
+      fontFamily: 'Arial',
+      fontSize: 20,
+      fontWeight: 'bold',
+      fill: getPowerUpColor(data.type),
+      stroke: { color: 0x000000, width: 3 }
+    }
+  });
+  text.x = data.x;
+  text.y = data.y;
+  text.anchor.set(0.5);
+  app.stage.addChild(text);
+
+  const duration = 500; // ms
+  const startTime = Date.now();
+  const startX = data.x;
+  const startY = data.y;
+
+  const animate = () => {
+    const now = Date.now();
+    const progress = Math.min((now - startTime) / duration, 1);
+
+    // Ease out cubic
+    const ease = 1 - Math.pow(1 - progress, 3);
+
+    if (targetPlayer && targetPlayer.parent) {
+      text.x = startX + (targetPlayer.x - startX) * ease;
+      text.y = startY + (targetPlayer.y - startY) * ease;
+    }
+
+    if (progress < 1) {
+      requestAnimationFrame(animate);
+    } else {
+      app.stage.removeChild(text);
+    }
+  };
+  requestAnimationFrame(animate);
+}
+
+function getPowerUpColor(type: string): number {
+  switch (type) {
+    case 'S+': return 0x00ff00; // Green
+    case 'S-': return 0xff0000; // Red
+    case 'H+': return 0xff00ff; // Pink
+    case 'A': return 0x0000ff; // Blue
+    case 'M': return 0xffa500; // Orange
+    default: return 0xffffff;
+  }
 }
 
 function addPlayer(id: string, info: any) {

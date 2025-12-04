@@ -37,6 +37,17 @@ interface Room {
     players: Record<string, PlayerState>;
     bullets: Record<string, any>;
     obstacles: any[];
+    powerUps: PowerUp[];
+    hiddenPowerUps: Record<string, PowerUp>; // Map obstacle ID to PowerUp
+}
+
+interface PowerUp {
+    id: string;
+    x: number;
+    y: number;
+    type: 'S+' | 'S-' | 'B+' | 'H+' | 'A' | 'M';
+    width: number;
+    height: number;
 }
 
 const rooms: Record<string, Room> = {};
@@ -44,15 +55,40 @@ const maps: Record<string, any[]> = {}; // In-memory map storage
 
 function generateObstacles(): any[] {
     const obstacles: any[] = [];
+    const maxAttempts = 100;
+    const minDistance = 40; // Minimum distance between obstacle centers
+
     for (let i = 0; i < 20; i++) {
-        obstacles.push({
-            id: `obs_${Math.random().toString(36).substr(2, 9)}`,
-            x: Math.random() * 700 + 50,
-            y: Math.random() * 500 + 50,
-            type: Math.random() > 0.5 ? 'crateWood.png' : 'crateMetal.png',
-            width: 28,
-            height: 28
-        });
+        let attempts = 0;
+        let valid = false;
+        let x = 0;
+        let y = 0;
+
+        while (!valid && attempts < maxAttempts) {
+            x = Math.random() * 700 + 50;
+            y = Math.random() * 500 + 50;
+            valid = true;
+
+            for (const obs of obstacles) {
+                const dist = Math.sqrt(Math.pow(x - obs.x, 2) + Math.pow(y - obs.y, 2));
+                if (dist < minDistance) {
+                    valid = false;
+                    break;
+                }
+            }
+            attempts++;
+        }
+
+        if (valid) {
+            obstacles.push({
+                id: `obs_${Math.random().toString(36).substr(2, 9)}`,
+                x: x,
+                y: y,
+                type: Math.random() > 0.5 ? 'crateWood.png' : 'crateMetal.png',
+                width: 28,
+                height: 28
+            });
+        }
     }
     return obstacles;
 }
@@ -87,13 +123,65 @@ io.on('connection', (socket: Socket) => {
     console.log(`Player connected: ${socket.id}`);
     let currentRoomId: string | null = null;
 
-    socket.on('createRoom', () => {
+    socket.on('createRoom', (config: any) => {
         const roomId = Math.random().toString(36).substr(2, 4).toUpperCase();
+
+        const mapData = config?.mapData;
+        const powerUpCount = config?.powerUpCount ?? 10;
+
+        let obstacles = [];
+        // Handle custom map data
+        if (mapData && mapData.obstacles) {
+            obstacles = mapData.obstacles.map((obs: any) => ({
+                ...obs,
+                id: obs.id || `obs_${Math.random().toString(36).substr(2, 9)}`
+            }));
+        } else {
+            obstacles = generateObstacles();
+        }
+
+        // Generate Power-ups
+        const powerUps: PowerUp[] = [];
+        const hiddenPowerUps: Record<string, PowerUp> = {};
+        const types: ('S+' | 'S-' | 'B+' | 'H+' | 'A' | 'M')[] = ['S+', 'S-', 'B+', 'H+', 'A', 'M'];
+
+        // Shuffle obstacles to hide power-ups randomly
+        const shuffledObstacles = [...obstacles].sort(() => 0.5 - Math.random());
+        const crateObstacles = shuffledObstacles.filter(o => o.type.includes('crateWood'));
+
+        for (let i = 0; i < powerUpCount; i++) {
+            const type = types[Math.floor(Math.random() * types.length)];
+            const pu: PowerUp = {
+                id: `pu_${Math.random().toString(36).substr(2, 9)}`,
+                x: 0,
+                y: 0,
+                type: type,
+                width: 20,
+                height: 20
+            };
+
+            if (i < crateObstacles.length) {
+                // Hide under crate
+                const obs = crateObstacles[i];
+                pu.x = obs.x;
+                pu.y = obs.y;
+                hiddenPowerUps[obs.id] = pu;
+            } else {
+                // Place in open
+                const pos = findSafeSpawnPosition(obstacles); // Reuse spawn logic
+                pu.x = pos.x;
+                pu.y = pos.y;
+                powerUps.push(pu);
+            }
+        }
+
         rooms[roomId] = {
             id: roomId,
             players: {},
             bullets: {},
-            obstacles: generateObstacles()
+            obstacles: obstacles,
+            powerUps: powerUps,
+            hiddenPowerUps: hiddenPowerUps
         };
 
         joinRoom(socket, roomId);
@@ -130,7 +218,13 @@ io.on('connection', (socket: Socket) => {
         };
 
         // Send room info to player
-        socket.emit('roomJoined', { roomId, players: room.players, obstacles: room.obstacles });
+        // Send room info to player
+        socket.emit('roomJoined', {
+            roomId,
+            players: room.players,
+            obstacles: room.obstacles,
+            powerUps: room.powerUps
+        });
 
         // Broadcast new player to others in room
         socket.to(roomId).emit('newPlayer', room.players[socket.id]);
@@ -193,7 +287,11 @@ io.on('connection', (socket: Socket) => {
                 room.players[id].y = spawnPos.y;
                 room.players[id].health = 10;
             });
-            io.to(currentRoomId).emit('gameReset', { players: room.players, obstacles: room.obstacles });
+            io.to(currentRoomId).emit('gameReset', {
+                players: room.players,
+                obstacles: room.obstacles,
+                powerUps: [] // Clear powerups on reset for now, or regenerate
+            });
         }
     });
 
@@ -252,6 +350,28 @@ setInterval(() => {
                             room.obstacles.splice(index, 1);
                         }
                         io.to(roomId).emit('obstacleDestroyed', obstacle.id);
+
+                        // Spawn hidden power-up or auto-collect
+                        if (room.hiddenPowerUps[obstacle.id]) {
+                            const pu = room.hiddenPowerUps[obstacle.id];
+
+                            // Auto-collect logic
+                            if (room.players[bullet.ownerId]) {
+                                const player = room.players[bullet.ownerId];
+                                applyPowerUpEffect(io, roomId, player, pu);
+                                io.to(roomId).emit('powerUpAutoCollected', {
+                                    playerId: bullet.ownerId,
+                                    type: pu.type,
+                                    x: obstacle.x,
+                                    y: obstacle.y
+                                });
+                            } else {
+                                // Fallback if player gone: spawn it
+                                room.powerUps.push(pu);
+                                io.to(roomId).emit('powerUpSpawned', pu);
+                            }
+                            delete room.hiddenPowerUps[obstacle.id];
+                        }
                     }
                     return;
                 }
@@ -283,6 +403,28 @@ setInterval(() => {
                 delete room.bullets[id];
             }
         });
+
+        // Check Power-up Collisions
+        for (let i = room.powerUps.length - 1; i >= 0; i--) {
+            const pu = room.powerUps[i];
+            let collected = false;
+            const playerIds = Object.keys(room.players);
+
+            for (const playerId of playerIds) {
+                const player = room.players[playerId];
+                if (checkCollision(pu, { x: player.x, y: player.y })) {
+                    // Apply Effect
+                    applyPowerUpEffect(io, roomId, player, pu);
+                    collected = true;
+                    break; // Stop checking other players
+                }
+            }
+
+            if (collected) {
+                room.powerUps.splice(i, 1);
+                io.to(roomId).emit('powerUpCollected', pu.id);
+            }
+        }
     });
 }, 1000 / 60);
 
@@ -291,6 +433,30 @@ function checkCollision(a: any, b: any) {
     const dy = a.y - b.y;
     const distance = Math.sqrt(dx * dx + dy * dy);
     return distance < 20; // Simple radius check
+}
+
+function applyPowerUpEffect(io: any, roomId: string, player: PlayerState, pu: PowerUp) {
+    switch (pu.type) {
+        case 'S+':
+            io.to(roomId).emit('statUpdate', { id: player.id, stat: 'speed', value: 5, duration: 5000 });
+            break;
+        case 'S-':
+            io.to(roomId).emit('statUpdate', { id: player.id, stat: 'speed', value: 1.5, duration: 5000 });
+            break;
+        case 'H+':
+            player.health = Math.min(player.health + 3, 10);
+            io.to(roomId).emit('healthUpdate', { id: player.id, health: player.health });
+            break;
+        case 'A':
+            io.to(roomId).emit('armorUpdate', { id: player.id, value: 5 });
+            break;
+        case 'B+':
+            // Placeholder
+            break;
+        case 'M':
+            io.to(roomId).emit('statUpdate', { id: player.id, stat: 'machineGun', value: 1, duration: 10000 });
+            break;
+    }
 }
 
 const PORT = process.env.PORT || 3000;

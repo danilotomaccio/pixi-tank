@@ -13,10 +13,17 @@ export class EditorScene extends PIXI.Container {
     private selectedType: string = 'crateWood.png';
     private onExit: () => void;
 
+    private boundResize: () => void;
+    private boundKeyDown: (e: KeyboardEvent) => void;
+    private boundKeyUp: (e: KeyboardEvent) => void;
+    private isShiftDown: boolean = false;
+    private lineStartPoint: { x: number, y: number } | null = null;
+
     constructor(app: PIXI.Application, onExit: () => void) {
         super();
         this.app = app;
         this.onExit = onExit;
+        this.boundResize = this.onResize.bind(this);
 
         // Layers
         this.groundLayer = new PIXI.Container();
@@ -39,8 +46,36 @@ export class EditorScene extends PIXI.Container {
 
         // Input
         this.eventMode = 'static';
-        this.hitArea = new PIXI.Rectangle(0, 0, 800, 600);
+        this.hitArea = new PIXI.Rectangle(0, 0, this.app.screen.width, this.app.screen.height);
         this.on('pointerdown', this.onPointerDown.bind(this));
+
+        // Resize Handler
+        this.app.renderer.on('resize', this.boundResize);
+
+        // Keyboard Listeners
+        this.boundKeyDown = this.onKeyDown.bind(this);
+        this.boundKeyUp = this.onKeyUp.bind(this);
+        window.addEventListener('keydown', this.boundKeyDown);
+        window.addEventListener('keyup', this.boundKeyUp);
+    }
+
+    private onKeyDown(e: KeyboardEvent) {
+        if (e.key === 'Shift') {
+            this.isShiftDown = true;
+        }
+    }
+
+    private onKeyUp(e: KeyboardEvent) {
+        if (e.key === 'Shift') {
+            this.isShiftDown = false;
+            this.lineStartPoint = null; // Reset line start on release
+        }
+    }
+
+    private onResize() {
+        if (this.destroyed) return;
+        this.hitArea = new PIXI.Rectangle(0, 0, this.app.screen.width, this.app.screen.height);
+        this.drawGrid();
     }
 
     private drawGrid() {
@@ -48,13 +83,16 @@ export class EditorScene extends PIXI.Container {
         this.grid.stroke({ width: 1, color: 0x333333, alpha: 0.5 });
 
         const cellSize = 40;
-        for (let x = 0; x <= 800; x += cellSize) {
+        const width = this.app.screen.width;
+        const height = this.app.screen.height;
+
+        for (let x = 0; x <= width; x += cellSize) {
             this.grid.moveTo(x, 0);
-            this.grid.lineTo(x, 600);
+            this.grid.lineTo(x, height);
         }
-        for (let y = 0; y <= 600; y += cellSize) {
+        for (let y = 0; y <= height; y += cellSize) {
             this.grid.moveTo(0, y);
-            this.grid.lineTo(800, y);
+            this.grid.lineTo(width, y);
         }
     }
 
@@ -63,6 +101,38 @@ export class EditorScene extends PIXI.Container {
         const x = Math.floor(e.global.x / cellSize) * cellSize + cellSize / 2;
         const y = Math.floor(e.global.y / cellSize) * cellSize + cellSize / 2;
 
+        if (this.isShiftDown && this.lineStartPoint) {
+            // Draw Line
+            this.drawLine(this.lineStartPoint.x, this.lineStartPoint.y, x, y);
+            this.lineStartPoint = { x, y }; // Continue line from here
+        } else {
+            // Single Placement
+            this.placeElement(x, y);
+            if (this.isShiftDown) {
+                this.lineStartPoint = { x, y };
+            }
+        }
+    }
+
+    private drawLine(x0: number, y0: number, x1: number, y1: number) {
+        const cellSize = 40;
+        const dx = Math.abs(x1 - x0);
+        const dy = Math.abs(y1 - y0);
+        const sx = (x0 < x1) ? cellSize : -cellSize;
+        const sy = (y0 < y1) ? cellSize : -cellSize;
+        let err = dx - dy;
+
+        while (true) {
+            this.placeElement(x0, y0);
+
+            if (Math.abs(x0 - x1) < 1 && Math.abs(y0 - y1) < 1) break;
+            const e2 = 2 * err;
+            if (e2 > -dy) { err -= dy; x0 += sx; }
+            if (e2 < dx) { err += dx; y0 += sy; }
+        }
+    }
+
+    private placeElement(x: number, y: number) {
         const isGround = this.selectedType.startsWith('tile');
 
         if (isGround) {
@@ -103,7 +173,9 @@ export class EditorScene extends PIXI.Container {
     }
 
     private saveMap() {
+        console.log('EditorScene: saveMap called');
         const name = prompt("Enter map name:");
+        console.log('EditorScene: prompt result', name);
         if (!name) return;
 
         const mapData = {
@@ -119,7 +191,17 @@ export class EditorScene extends PIXI.Container {
             }))
         };
 
-        (this as any).saveMap(name, mapData);
+        const json = JSON.stringify(mapData, null, 2);
+        const blob = new Blob([json], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `${name}.json`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
     }
 
     private getTextureName(texture: PIXI.Texture): string {
@@ -128,10 +210,29 @@ export class EditorScene extends PIXI.Container {
     }
 
     private loadMap() {
-        const name = prompt("Enter map name to load:");
-        if (!name) return;
+        const input = document.createElement('input');
+        input.type = 'file';
+        input.accept = '.json';
 
-        (this as any).loadMap(name);
+        input.onchange = (e: any) => {
+            const file = e.target.files[0];
+            if (!file) return;
+
+            const reader = new FileReader();
+            reader.onload = (readerEvent) => {
+                try {
+                    const content = readerEvent.target?.result as string;
+                    const mapData = JSON.parse(content);
+                    this.setObstacles(mapData);
+                } catch (err) {
+                    console.error('Error loading map:', err);
+                    alert('Failed to load map file.');
+                }
+            };
+            reader.readAsText(file);
+        };
+
+        input.click();
     }
 
     public setObstacles(data: any) {
@@ -172,6 +273,9 @@ export class EditorScene extends PIXI.Container {
     }
 
     public destroy(options?: any) {
+        this.app.renderer.off('resize', this.boundResize);
+        window.removeEventListener('keydown', this.boundKeyDown);
+        window.removeEventListener('keyup', this.boundKeyUp);
         this.ui.destroy();
         super.destroy(options);
     }
