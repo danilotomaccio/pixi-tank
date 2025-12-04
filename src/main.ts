@@ -49,7 +49,8 @@ function createBackground() {
 }
 
 function startMenu() {
-  const menu = new MenuScene(app, () => startGame('create'), (roomId) => startGame('join', roomId), startEditor);
+  setupSocket(); // Ensure socket is initialized
+  const menu = new MenuScene(app, () => startGame('create'), (roomId) => startGame('join', roomId), startEditor, socket);
   app.stage.addChild(menu);
 }
 

@@ -12,13 +12,32 @@ export class MenuScene extends PIXI.Container {
     private onStartGame: () => void;
     private onJoinGame: (roomId: string) => void;
     private onStartEditor: () => void;
+    private statusText: PIXI.Text;
+    private socket: any;
 
-    constructor(app: PIXI.Application, onStartGame: () => void, onJoinGame: (roomId: string) => void, onStartEditor: () => void) {
+    constructor(app: PIXI.Application, onStartGame: () => void, onJoinGame: (roomId: string) => void, onStartEditor: () => void, socket: any) {
         super();
         this.app = app;
         this.onStartGame = onStartGame;
         this.onJoinGame = onJoinGame;
         this.onStartEditor = onStartEditor;
+        this.socket = socket;
+
+        // Status Text
+        this.statusText = new PIXI.Text({
+            text: 'Checking Server...',
+            style: {
+                fontFamily: 'Arial',
+                fontSize: 18,
+                fill: 0xffffff,
+                align: 'left'
+            }
+        });
+        this.statusText.x = 20;
+        this.statusText.y = 20;
+        this.addChild(this.statusText);
+
+        this.checkConnection();
 
         // Player
         this.player = new Player('menu_player', app, true, 'blue');
@@ -129,5 +148,35 @@ export class MenuScene extends PIXI.Container {
     public destroyScene() {
         this.app.ticker.remove(this.update, this);
         this.destroy({ children: true });
+    }
+    private checkConnection() {
+        if (this.socket && this.socket.connected) {
+            this.statusText.text = 'Server: Online';
+            this.statusText.style.fill = 0x00ff00;
+        } else {
+            this.statusText.text = 'Server: Offline (Connecting...)';
+            this.statusText.style.fill = 0xff0000;
+        }
+
+        if (this.socket) {
+            this.socket.on('connect', () => {
+                if (!this.destroyed) {
+                    this.statusText.text = 'Server: Online';
+                    this.statusText.style.fill = 0x00ff00;
+                }
+            });
+            this.socket.on('disconnect', () => {
+                if (!this.destroyed) {
+                    this.statusText.text = 'Server: Offline';
+                    this.statusText.style.fill = 0xff0000;
+                }
+            });
+            this.socket.on('connect_error', () => {
+                if (!this.destroyed) {
+                    this.statusText.text = 'Server: Unreachable';
+                    this.statusText.style.fill = 0xff0000;
+                }
+            });
+        }
     }
 }
