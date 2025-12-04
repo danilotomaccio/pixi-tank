@@ -6,9 +6,15 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "server": "tsx server.ts"
   },
   "devDependencies": {
+    "@types/express": "^5.0.6",
+    "@types/socket.io": "^3.0.1",
+    "@types/socket.io-client": "^1.4.36",
+    "ts-node": "^10.9.2",
+    "tsx": "^4.21.0",
     "typescript": "~5.9.3",
     "vite": "npm:rolldown-vite@7.2.5"
   },
@@ -17,6 +23,10 @@
   },
   "dependencies": {
     "@tailwindcss/vite": "^4.1.17",
+    "express": "^5.2.1",
+    "pixi.js": "^8.14.3",
+    "socket.io": "^4.8.1",
+    "socket.io-client": "^4.8.1",
     "tailwindcss": "^4.1.17"
   }
 }
