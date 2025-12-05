@@ -14,7 +14,7 @@ export class Explosion extends PIXI.AnimatedSprite {
         this.x = x;
         this.y = y;
         this.anchor.set(0.5);
-        this.animationSpeed = 0.2;
+        this.animationSpeed = 0.5;
         this.loop = false;
         this.onComplete = () => {
             this.destroy();

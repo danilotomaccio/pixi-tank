@@ -18,6 +18,7 @@ let obstacles: Record<string, PIXI.Sprite> = {};
 let powerUps: Record<string, PIXI.Container> = {}; // Changed to Container to support Text or Sprite
 let myId: string | null = null;
 let gameLoop: ((ticker: PIXI.Ticker) => void) | null = null;
+let handledExplosions: Set<string> = new Set();
 
 async function init() {
   // Initialize PixiJS
@@ -136,8 +137,30 @@ function startGame(mode: 'create' | 'join', roomId?: string, config?: { mapData?
     }
 
     // Update bullets
+    // Update bullets
     Object.keys(bullets).forEach(id => {
-      bullets[id].update();
+      const bullet = bullets[id];
+      bullet.update();
+
+      // Client-side prediction for local bullets
+      if (bullet.ownerId === myId) {
+        for (const obsId in obstacles) {
+          const obs = obstacles[obsId];
+          if (checkCollision(bullet, obs)) {
+            // Explode locally
+            const explosion = new Explosion(bullet.x, bullet.y);
+            app.stage.addChild(explosion);
+
+            // Remove bullet
+            app.stage.removeChild(bullet);
+            delete bullets[id];
+
+            // Mark as handled
+            handledExplosions.add(id);
+            break; // Stop checking other obstacles
+          }
+        }
+      }
     });
   };
   app.ticker.add(gameLoop);
@@ -147,7 +170,8 @@ function setupSocket() {
   if (socket) return; // Already connected
 
   // Connect to the server
-  socket = io('http://172.20.76.129:3000');
+  // socket = io('http://172.20.76.129:3000');
+  socket = io('http://localhost:3000');
 
   socket.on('connect', () => {
     console.log('Connected to server');
@@ -236,6 +260,10 @@ function setupSocket() {
   });
 
   socket.on('bulletExploded', (info: any) => {
+    if (handledExplosions.has(info.id)) {
+      handledExplosions.delete(info.id);
+      return; // Already handled locally
+    }
     if (bullets[info.id]) {
       app.stage.removeChild(bullets[info.id]);
       delete bullets[info.id];
@@ -458,6 +486,27 @@ function removePlayer(id: string) {
     app.stage.removeChild(players[id]);
     delete players[id];
   }
+}
+
+function checkCollision(a: any, b: any) {
+  // b is the obstacle (Sprite)
+  // a is the bullet
+  const bulletRadius = 2;
+  const bWidth = b.width;
+  const bHeight = b.height;
+
+  const bLeft = b.x - bWidth / 2;
+  const bRight = b.x + bWidth / 2;
+  const bTop = b.y - bHeight / 2;
+  const bBottom = b.y + bHeight / 2;
+
+  const closestX = Math.max(bLeft, Math.min(a.x, bRight));
+  const closestY = Math.max(bTop, Math.min(a.y, bBottom));
+
+  const distanceX = a.x - closestX;
+  const distanceY = a.y - closestY;
+
+  return (distanceX * distanceX + distanceY * distanceY) < (bulletRadius * bulletRadius);
 }
 
 init();

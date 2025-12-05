@@ -7,6 +7,10 @@ export class Player extends PIXI.Container {
     public body: PIXI.Sprite;
     public turret: PIXI.Container;
     public speed: number = 3;
+    public vx: number = 0;
+    public vy: number = 0;
+    public acceleration: number = 0.2;
+    public friction: number = 0.9;
     public isLocal: boolean;
     private keys: any = {};
     private app: PIXI.Application;
@@ -104,22 +108,42 @@ export class Player extends PIXI.Container {
     }
 
     public update(obstacles: PIXI.Sprite[]): void {
-        let dx = 0;
-        let dy = 0;
+        let ax = 0;
+        let ay = 0;
 
-        if (this.keys['w']) dy -= 1;
-        if (this.keys['s']) dy += 1;
-        if (this.keys['a']) dx -= 1;
-        if (this.keys['d']) dx += 1;
+        if (this.keys['w']) ay -= 1;
+        if (this.keys['s']) ay += 1;
+        if (this.keys['a']) ax -= 1;
+        if (this.keys['d']) ax += 1;
 
-        if (dx !== 0 || dy !== 0) {
-            // Normalize vector
-            const length = Math.sqrt(dx * dx + dy * dy);
-            dx /= length;
-            dy /= length;
+        // Apply acceleration
+        if (ax !== 0 || ay !== 0) {
+            const len = Math.sqrt(ax * ax + ay * ay);
+            ax /= len;
+            ay /= len;
+            this.vx += ax * this.acceleration;
+            this.vy += ay * this.acceleration;
+        }
 
-            const nextX = this.x + dx * this.speed;
-            const nextY = this.y + dy * this.speed;
+        // Apply friction
+        this.vx *= this.friction;
+        this.vy *= this.friction;
+
+        // Cap speed
+        const velocity = Math.sqrt(this.vx * this.vx + this.vy * this.vy);
+        if (velocity > this.speed) {
+            const scale = this.speed / velocity;
+            this.vx *= scale;
+            this.vy *= scale;
+        }
+
+        // Stop if very slow
+        if (Math.abs(this.vx) < 0.01) this.vx = 0;
+        if (Math.abs(this.vy) < 0.01) this.vy = 0;
+
+        if (this.vx !== 0 || this.vy !== 0) {
+            const nextX = this.x + this.vx;
+            const nextY = this.y + this.vy;
 
             // Check collision with obstacles
             let collision = false;
@@ -130,6 +154,8 @@ export class Player extends PIXI.Container {
                 const dist = Math.sqrt(Math.pow(nextX - obstacle.x, 2) + Math.pow(nextY - obstacle.y, 2));
                 if (dist < tankRadius + obstacleRadius) {
                     collision = true;
+                    this.vx = 0; // Stop on collision
+                    this.vy = 0;
                     break;
                 }
             }
@@ -137,6 +163,8 @@ export class Player extends PIXI.Container {
             // Check canvas boundaries
             if (nextX < tankRadius || nextX > this.app.screen.width - tankRadius || nextY < tankRadius || nextY > this.app.screen.height - tankRadius) {
                 collision = true;
+                this.vx = 0;
+                this.vy = 0;
             }
 
             if (!collision) {
@@ -145,7 +173,9 @@ export class Player extends PIXI.Container {
             }
 
             // Rotate body to face movement direction
-            this.body.rotation = Math.atan2(dy, dx) + Math.PI / 2;
+            if (velocity > 0.1) {
+                this.body.rotation = Math.atan2(this.vy, this.vx) + Math.PI / 2;
+            }
         }
 
         // Rotate turret to face mouse
@@ -232,7 +262,7 @@ export class Player extends PIXI.Container {
     public showMuzzleFlash() {
         const flash = new PIXI.Sprite(textures['shotOrange.png']);
         flash.anchor.set(0.5, 1);
-        flash.y = -30; // Tip of barrel
+        flash.y = -22; // Tip of barrel
         this.turret.addChild(flash);
 
         setTimeout(() => {

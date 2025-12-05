@@ -137,7 +137,31 @@ io.on('connection', (socket: Socket) => {
                 id: obs.id || `obs_${Math.random().toString(36).substr(2, 9)}`
             }));
         } else {
-            obstacles = generateObstacles();
+            // Try to load default maps
+            try {
+                const files = fs.readdirSync(MAPS_DIR);
+                const defaultMaps = files.filter(f => f.startsWith('default_') && f.endsWith('.json'));
+
+                if (defaultMaps.length > 0) {
+                    const randomMap = defaultMaps[Math.floor(Math.random() * defaultMaps.length)];
+                    console.log(`Loading default map: ${randomMap}`);
+                    const mapContent = fs.readFileSync(path.join(MAPS_DIR, randomMap), 'utf8');
+                    const mapJson = JSON.parse(mapContent);
+                    if (mapJson.obstacles) {
+                        obstacles = mapJson.obstacles.map((obs: any) => ({
+                            ...obs,
+                            id: obs.id || `obs_${Math.random().toString(36).substr(2, 9)}`
+                        }));
+                    } else {
+                        obstacles = generateObstacles();
+                    }
+                } else {
+                    obstacles = generateObstacles();
+                }
+            } catch (e) {
+                console.error("Failed to load default maps:", e);
+                obstacles = generateObstacles();
+            }
         }
 
         // Generate Power-ups
@@ -272,7 +296,7 @@ io.on('connection', (socket: Socket) => {
                 vy: Math.sin(room.players[socket.id].turretRotation - Math.PI / 2) * 10
             };
             room.bullets[bulletId] = bullet;
-            io.to(currentRoomId).emit('bulletFired', bullet);
+            io.to(currentRoomId).emit('newBullet', bullet);
         }
     });
 
@@ -429,6 +453,31 @@ setInterval(() => {
 }, 1000 / 60);
 
 function checkCollision(a: any, b: any) {
+    // Check if 'b' is a rectangular obstacle (has width/height)
+    if (b.width && b.height) {
+        // AABB Collision (Axis-Aligned Bounding Box)
+        // 'a' is usually a bullet (point or small circle), treat as point for simplicity or small box
+        // Bullets are small, so point check is often enough, but let's give it a small radius
+        const bulletRadius = 2;
+
+        // b.x/y is center
+        const bLeft = b.x - b.width / 2;
+        const bRight = b.x + b.width / 2;
+        const bTop = b.y - b.height / 2;
+        const bBottom = b.y + b.height / 2;
+
+        // Simple point vs AABB check (closest point on AABB to circle center)
+        const closestX = Math.max(bLeft, Math.min(a.x, bRight));
+        const closestY = Math.max(bTop, Math.min(a.y, bBottom));
+
+        const distanceX = a.x - closestX;
+        const distanceY = a.y - closestY;
+
+        const distanceSquared = (distanceX * distanceX) + (distanceY * distanceY);
+        return distanceSquared < (bulletRadius * bulletRadius);
+    }
+
+    // Default to radius check (for players/round objects)
     const dx = a.x - b.x;
     const dy = a.y - b.y;
     const distance = Math.sqrt(dx * dx + dy * dy);
