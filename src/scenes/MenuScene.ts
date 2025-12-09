@@ -15,14 +15,16 @@ export class MenuScene extends PIXI.Container {
     private statusText: PIXI.Text;
     private socket: any;
     private configModal: HTMLDivElement | null = null;
+    private getInput: () => { x: number, y: number, shoot: boolean } | null;
 
-    constructor(app: PIXI.Application, onStartGame: (config: { mapData?: any, powerUpCount: number }) => void, onJoinGame: (roomId: string) => void, onStartEditor: () => void, socket: any) {
+    constructor(app: PIXI.Application, onStartGame: (config: { mapData?: any, powerUpCount: number }) => void, onJoinGame: (roomId: string) => void, onStartEditor: () => void, socket: any, getInput: () => { x: number, y: number, shoot: boolean } | null) {
         super();
         this.app = app;
         this.onStartGame = onStartGame;
         this.onJoinGame = onJoinGame;
         this.onStartEditor = onStartEditor;
         this.socket = socket;
+        this.getInput = getInput;
 
         // Status Text
         this.statusText = new PIXI.Text({
@@ -56,22 +58,59 @@ export class MenuScene extends PIXI.Container {
         this.createButtons();
 
         // Loop
-        this.app.ticker.add(this.update.bind(this));
+        this.app.ticker.add(this.update, this);
+
+        // Resize
+        this.app.renderer.on('resize', this.onResize);
     }
 
     private createButtons() {
-        const spacing = 200;
-        const startX = this.app.screen.width / 2 - spacing * 1.5;
-        const y = 200;
+        // Clear existing buttons
+        this.buttons.forEach(btn => btn.destroy());
+        this.buttons = [];
 
-        const btn1 = new ButtonBlock('btn_match', startX, y, 'new-match');
-        const btn2 = new ButtonBlock('btn_join', startX + spacing, y, 'join-match');
-        const btn3 = new ButtonBlock('btn_map', startX + spacing * 2, y, 'create-map');
-        const btn4 = new ButtonBlock('btn_settings', startX + spacing * 3, y, 'settings');
+        const isSmallScreen = this.app.screen.width < 600;
+        const spacing = isSmallScreen ? 120 : 200;
+        const startX = this.app.screen.width / 2;
+        const startY = isSmallScreen ? this.app.screen.height / 2 - 200 : 200;
 
-        this.buttons.push(btn1, btn2, btn3, btn4);
-        this.addChild(btn1, btn2, btn3, btn4);
+        const btn1 = new ButtonBlock('btn_match', 0, 0, 'new-match');
+        const btn2 = new ButtonBlock('btn_join', 0, 0, 'join-match');
+        const btn3 = new ButtonBlock('btn_map', 0, 0, 'create-map');
+        const btn4 = new ButtonBlock('btn_settings', 0, 0, 'settings');
+
+        const allButtons = [btn1, btn2, btn3, btn4];
+
+        if (isSmallScreen) {
+            // Vertical Stack
+            allButtons.forEach((btn, index) => {
+                btn.x = startX;
+                btn.y = startY + index * spacing;
+            });
+        } else {
+            // Horizontal Row
+            const totalWidth = spacing * (allButtons.length - 1);
+            const rowStartX = this.app.screen.width / 2 - totalWidth / 2;
+            allButtons.forEach((btn, index) => {
+                btn.x = rowStartX + index * spacing;
+                btn.y = startY;
+            });
+        }
+
+        this.buttons.push(...allButtons);
+        this.addChild(...allButtons);
+
+        // Add click listeners
+        allButtons.forEach(btn => {
+            btn.on('click', () => this.handleButtonAction(btn));
+        });
     }
+
+    private onResize = () => {
+        this.player.x = this.app.screen.width / 2;
+        this.player.y = this.app.screen.height - 100;
+        this.createButtons();
+    };
 
     private showConfigModal() {
         if (this.configModal) return;
@@ -181,6 +220,15 @@ export class MenuScene extends PIXI.Container {
         // But Player.ts expects Sprite[] and checks .x .y. ButtonBlock is Container (has x/y).
         // However, collision logic uses radius. ButtonBlock is 100x100.
         // Let's just pass them as any[] for now or fix Player.ts later.
+        // Check Mobile Input
+        if (this.getInput) {
+            const input = this.getInput();
+            if (input) {
+                this.player.joystickInput = { x: input.x, y: input.y };
+                this.player.triggerHeld = input.shoot;
+            }
+        }
+
         this.player.update(this.buttons as any[]);
 
         // Update Bullets
@@ -244,6 +292,7 @@ export class MenuScene extends PIXI.Container {
     public destroyScene() {
         this.destroyModal();
         this.app.ticker.remove(this.update, this);
+        this.app.renderer.off('resize', this.onResize);
         this.destroy({ children: true });
     }
     private checkConnection() {

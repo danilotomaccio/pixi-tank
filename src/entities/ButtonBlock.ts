@@ -43,5 +43,9 @@ export class ButtonBlock extends PIXI.Container {
         });
         this.labelText.anchor.set(0.5);
         this.addChild(this.labelText);
+
+        this.interactive = true;
+        this.cursor = 'pointer';
+        this.on('pointerdown', () => this.emit('click'));
     }
 }

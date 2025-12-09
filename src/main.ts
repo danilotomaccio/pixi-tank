@@ -7,6 +7,8 @@ import { Bullet } from './entities/Bullet';
 import { Explosion } from './entities/Explosion';
 import { MenuScene } from './scenes/MenuScene';
 import { EditorScene } from './scenes/EditorScene';
+import { VirtualJoystick } from './ui/VirtualJoystick';
+import { ShootButton } from './ui/ShootButton';
 
 const app = new PIXI.Application();
 
@@ -15,10 +17,16 @@ let socket: Socket;
 let players: Record<string, Player> = {};
 let bullets: Record<string, Bullet> = {};
 let obstacles: Record<string, PIXI.Sprite> = {};
-let powerUps: Record<string, PIXI.Container> = {}; // Changed to Container to support Text or Sprite
+let powerUps: Record<string, PIXI.Container> = {};
 let myId: string | null = null;
 let gameLoop: ((ticker: PIXI.Ticker) => void) | null = null;
 let handledExplosions: Set<string> = new Set();
+let joystick: VirtualJoystick | null = null;
+let shootButton: ShootButton | null = null;
+
+// Layers
+let gameContainer: PIXI.Container | null = null;
+let uiContainer: PIXI.Container | null = null;
 
 async function init() {
   // Initialize PixiJS
@@ -28,8 +36,14 @@ async function init() {
   // Load Assets
   await loadTextureAtlas('allSprites_default.xml', 'allSprites_default.png');
 
-  // Create Background
+  // Create Background (added directly to stage, behind everything)
   createBackground();
+
+  // Create UI Container & Mobile Controls immediately
+  uiContainer = new PIXI.Container();
+  // We'll add it to stage, but we need to make sure it stays on top.
+  // Ideally, distinct layers.
+  createMobileControls();
 
   // Start Menu
   startMenu();
@@ -42,6 +56,11 @@ function createBackground() {
     width: app.screen.width,
     height: app.screen.height,
   });
+  tilingSprite.label = 'background';
+  // Check if background already exists
+  const existing = app.stage.children.find(c => c.label === 'background');
+  if (existing) app.stage.removeChild(existing);
+
   app.stage.addChildAt(tilingSprite, 0); // Always at bottom
 
   app.renderer.on('resize', () => {
@@ -51,35 +70,46 @@ function createBackground() {
 }
 
 function startMenu() {
-  // Cleanup stage
-  while (app.stage.children.length > 0) {
-    const child = app.stage.children[0];
-    if ((child as any).destroy) {
-      (child as any).destroy({ children: true });
-    } else {
-      app.stage.removeChild(child);
-    }
-  }
-  createBackground(); // Re-add background
+  cleanupGame();
 
-  setupSocket(); // Ensure socket is initialized
-  const menu = new MenuScene(app, (config) => startGame('create', undefined, config), (roomId) => startGame('join', roomId), startEditor, socket);
+  // Re-add background because cleanup might have wiped it if not careful, 
+  // but we can just clear children and re-add.
+  while (app.stage.children.length > 0) {
+    app.stage.removeChildren();
+  }
+  // Create Background (added directly to stage, behind everything)
+  createBackground();
+
+  // Make sure UI container is on top
+  if (uiContainer && uiContainer.parent) uiContainer.parent.removeChild(uiContainer);
+  if (uiContainer) app.stage.addChild(uiContainer);
+
+  setupSocket();
+  const menu = new MenuScene(
+    app,
+    (config) => startGame('create', undefined, config),
+    (roomId) => startGame('join', roomId),
+    startEditor,
+    socket,
+    () => {
+      if (joystick && shootButton) {
+        return { x: joystick.value.x, y: joystick.value.y, shoot: shootButton.isPressed };
+      }
+      return null;
+    }
+  );
   app.stage.addChild(menu);
 }
 
 function startEditor() {
-  // Cleanup stage
-  while (app.stage.children.length > 0) {
-    const child = app.stage.children[0];
-    if ((child as any).destroy) {
-      (child as any).destroy({ children: true });
-    } else {
-      app.stage.removeChild(child);
-    }
-  }
-  createBackground(); // Re-add background
+  cleanupGame();
 
-  setupSocket(); // Ensure socket is connected
+  while (app.stage.children.length > 0) {
+    app.stage.removeChildren();
+  }
+  createBackground();
+
+  setupSocket();
   const editor = new EditorScene(app, startMenu);
   app.stage.addChild(editor);
 
@@ -87,7 +117,7 @@ function startEditor() {
     socket.emit('loadMap', name);
   };
 
-  socket.off('mapLoaded'); // Remove old listeners
+  socket.off('mapLoaded');
   socket.on('mapLoaded', (mapData: any) => {
     if (mapData) {
       (editor as any).setObstacles(mapData);
@@ -97,25 +127,48 @@ function startEditor() {
   });
 }
 
-function startGame(mode: 'create' | 'join', roomId?: string, config?: { mapData?: any, powerUpCount: number }) {
-  // Cleanup stage
-  while (app.stage.children.length > 0) {
-    const child = app.stage.children[0];
-    if ((child as any).destroy) {
-      (child as any).destroy({ children: true });
-    } else {
-      app.stage.removeChild(child);
-    }
+function cleanupGame() {
+  if (gameLoop) {
+    app.ticker.remove(gameLoop);
+    gameLoop = null;
   }
-  createBackground(); // Re-add background
+  gameContainer = null;
+  uiContainer = null;
+  players = {};
+  bullets = {};
+  obstacles = {};
+  powerUps = {};
+  handledExplosions.clear();
+}
 
-  // Connect to Server
+function startGame(mode: 'create' | 'join', roomId?: string, config?: { mapData?: any, powerUpCount: number }) {
+  cleanupGame();
+
+  while (app.stage.children.length > 0) {
+    app.stage.removeChildren();
+  }
+  createBackground();
+
+  // Init Layers
+  gameContainer = new PIXI.Container(); // This will be the camera
+  app.stage.addChild(gameContainer);
+
+  // Re-add UI container to be on top
+  if (uiContainer && uiContainer.parent) uiContainer.parent.removeChild(uiContainer);
+  if (uiContainer) app.stage.addChild(uiContainer);
+
   setupSocket();
 
   if (mode === 'create') {
     socket.emit('createRoom', config);
   } else if (mode === 'join' && roomId) {
     socket.emit('joinRoom', roomId);
+  }
+
+  // Mobile Controls - already created in init, just ensure visible
+  if (joystick && shootButton) {
+    joystick.visible = true;
+    shootButton.visible = true;
   }
 
   // Game Loop
@@ -125,7 +178,26 @@ function startGame(mode: 'create' | 'join', roomId?: string, config?: { mapData?
       const player = players[myId];
       player.update(Object.values(obstacles));
 
-      // Emit movement if changed
+      // Camera Follow
+      if (gameContainer) {
+        gameContainer.pivot.set(player.x, player.y);
+        gameContainer.position.set(app.screen.width / 2, app.screen.height / 2);
+
+        // Optional: Parallax background?
+        // For simple tiling sprite, we can just move it opposite to player but modulo
+        const bg = app.stage.children.find(c => c.label === 'background') as PIXI.TilingSprite;
+        if (bg) {
+          bg.tilePosition.x = -player.x;
+          bg.tilePosition.y = -player.y;
+        }
+      }
+
+      // Pass Mobile Input
+      if (joystick && shootButton) {
+        player.joystickInput = joystick.value;
+        player.triggerHeld = shootButton.isPressed;
+      }
+
       if (socket) {
         socket.emit('playerMovement', {
           x: player.x,
@@ -137,27 +209,23 @@ function startGame(mode: 'create' | 'join', roomId?: string, config?: { mapData?
     }
 
     // Update bullets
-    // Update bullets
     Object.keys(bullets).forEach(id => {
       const bullet = bullets[id];
       bullet.update();
 
-      // Client-side prediction for local bullets
+      // Client-side prediction
       if (bullet.ownerId === myId) {
         for (const obsId in obstacles) {
           const obs = obstacles[obsId];
           if (checkCollision(bullet, obs)) {
-            // Explode locally
             const explosion = new Explosion(bullet.x, bullet.y);
-            app.stage.addChild(explosion);
+            if (gameContainer) gameContainer.addChild(explosion);
 
-            // Remove bullet
-            app.stage.removeChild(bullet);
+            if (gameContainer) gameContainer.removeChild(bullet);
             delete bullets[id];
 
-            // Mark as handled
             handledExplosions.add(id);
-            break; // Stop checking other obstacles
+            break;
           }
         }
       }
@@ -167,11 +235,10 @@ function startGame(mode: 'create' | 'join', roomId?: string, config?: { mapData?
 }
 
 function setupSocket() {
-  if (socket) return; // Already connected
+  if (socket) return;
 
-  // Connect to the server
-  // socket = io('http://172.20.76.129:3000');
-  socket = io('http://localhost:3000');
+  socket = io('http://172.20.79.29:3000');
+  // socket = io('http://localhost:3000');
 
   socket.on('connect', () => {
     console.log('Connected to server');
@@ -181,37 +248,18 @@ function setupSocket() {
   socket.on('roomJoined', (data: any) => {
     console.log(`Joined room: ${data.roomId}`);
 
-    // Display Room Code
     const roomCodeText = new PIXI.Text({
       text: `Room: ${data.roomId}`, style: {
-        fontFamily: 'Arial',
-        fontSize: 24,
-        fill: 0xffffff,
-        align: 'right'
+        fontFamily: 'Arial', fontSize: 24, fill: 0xffffff, align: 'right'
       }
     });
     roomCodeText.x = app.screen.width - 150;
     roomCodeText.y = 20;
-    app.stage.addChild(roomCodeText);
-
-    // Clear existing state
-    Object.keys(players).forEach(id => removePlayer(id));
-    Object.keys(obstacles).forEach(id => {
-      app.stage.removeChild(obstacles[id]);
-      delete obstacles[id];
-    });
-    Object.keys(powerUps).forEach(id => {
-      app.stage.removeChild(powerUps[id]);
-      delete powerUps[id];
-    });
+    if (uiContainer) uiContainer.addChild(roomCodeText);
 
     // Load room state
-    Object.keys(data.players).forEach(id => {
-      addPlayer(id, data.players[id]);
-    });
-    data.obstacles.forEach((obs: any) => {
-      createObstacle(obs);
-    });
+    Object.keys(data.players).forEach(id => addPlayer(id, data.players[id]));
+    data.obstacles.forEach((obs: any) => createObstacle(obs));
     if (data.powerUps) {
       data.powerUps.forEach((pu: any) => createPowerUp(pu));
     }
@@ -219,41 +267,30 @@ function setupSocket() {
 
   socket.on('error', (msg: string) => {
     alert(msg);
-    location.reload(); // Simple error handling
+    location.reload();
   });
 
-  socket.on('newPlayer', (playerInfo: any) => {
-    addPlayer(playerInfo.id, playerInfo);
-  });
-
-  socket.on('playerDisconnected', (id: string) => {
-    removePlayer(id);
-  });
+  socket.on('newPlayer', (playerInfo: any) => addPlayer(playerInfo.id, playerInfo));
+  socket.on('playerDisconnected', (id: string) => removePlayer(id));
 
   socket.on('playerMoved', (playerInfo: any) => {
     if (players[playerInfo.id]) {
-      // Don't update self from server to avoid lag/jitter (client prediction/authoritative)
       if (playerInfo.id !== myId) {
         players[playerInfo.id].setRemoteState(
-          playerInfo.x,
-          playerInfo.y,
-          playerInfo.bodyRotation,
-          playerInfo.turretRotation
+          playerInfo.x, playerInfo.y, playerInfo.bodyRotation, playerInfo.turretRotation
         );
       }
     }
   });
 
   socket.on('currentObstacles', (serverObstacles: any[]) => {
-    serverObstacles.forEach(obs => {
-      createObstacle(obs);
-    });
+    serverObstacles.forEach(obs => createObstacle(obs));
   });
 
   socket.on('newBullet', (bulletInfo: any) => {
     const bullet = new Bullet(bulletInfo.id, bulletInfo.ownerId, bulletInfo.x, bulletInfo.y, bulletInfo.rotation);
     bullets[bullet.id] = bullet;
-    app.stage.addChild(bullet);
+    if (gameContainer) gameContainer.addChild(bullet);
     if (players[bulletInfo.ownerId]) {
       players[bulletInfo.ownerId].showMuzzleFlash();
     }
@@ -262,19 +299,19 @@ function setupSocket() {
   socket.on('bulletExploded', (info: any) => {
     if (handledExplosions.has(info.id)) {
       handledExplosions.delete(info.id);
-      return; // Already handled locally
+      return;
     }
     if (bullets[info.id]) {
-      app.stage.removeChild(bullets[info.id]);
+      if (gameContainer) gameContainer.removeChild(bullets[info.id]);
       delete bullets[info.id];
     }
     const explosion = new Explosion(info.x, info.y);
-    app.stage.addChild(explosion);
+    if (gameContainer) gameContainer.addChild(explosion);
   });
 
   socket.on('obstacleDestroyed', (id: string) => {
     if (obstacles[id]) {
-      app.stage.removeChild(obstacles[id]);
+      if (gameContainer) gameContainer.removeChild(obstacles[id]);
       delete obstacles[id];
     }
   });
@@ -287,46 +324,31 @@ function setupSocket() {
 
   socket.on('playerDied', (id: string) => {
     if (players[id]) {
-      // Explosion effect
       const explosion = new Explosion(players[id].x, players[id].y);
-      app.stage.addChild(explosion);
-
+      if (gameContainer) gameContainer.addChild(explosion);
       removePlayer(id);
-
       if (id === myId) {
-        // Local player died
         alert("You Died!");
-        // Optionally return to menu or spectate
-        // For now, reload to restart
         location.reload();
       }
     }
   });
 
   socket.on('gameReset', (data: any) => {
-    // Clear obstacles
     Object.keys(obstacles).forEach(id => {
-      app.stage.removeChild(obstacles[id]);
+      if (gameContainer) gameContainer.removeChild(obstacles[id]);
     });
     obstacles = {};
-
-    // Clear power-ups
     Object.keys(powerUps).forEach(id => {
-      app.stage.removeChild(powerUps[id]);
+      if (gameContainer) gameContainer.removeChild(powerUps[id]);
     });
     powerUps = {};
 
-    // Recreate obstacles
-    data.obstacles.forEach((obs: any) => {
-      createObstacle(obs);
-    });
-
-    // Recreate power-ups
+    data.obstacles.forEach((obs: any) => createObstacle(obs));
     if (data.powerUps) {
       data.powerUps.forEach((pu: any) => createPowerUp(pu));
     }
 
-    // Update players
     Object.keys(data.players).forEach(id => {
       if (players[id]) {
         players[id].x = data.players[id].x;
@@ -335,45 +357,34 @@ function setupSocket() {
     });
   });
 
-  socket.on('powerUpSpawned', (powerUpInfo: any) => {
-    createPowerUp(powerUpInfo);
-  });
-
+  socket.on('powerUpSpawned', (info: any) => createPowerUp(info));
   socket.on('powerUpCollected', (id: string) => {
     if (powerUps[id]) {
-      app.stage.removeChild(powerUps[id]);
+      if (gameContainer) gameContainer.removeChild(powerUps[id]);
       delete powerUps[id];
     }
   });
 
-  socket.on('powerUpAutoCollected', (data: { playerId: string, type: string, x: number, y: number }) => {
-    animatePowerUpCollection(data);
-  });
+  socket.on('powerUpAutoCollected', (data: any) => animatePowerUpCollection(data));
 
-  socket.on('statUpdate', (data: { id: string, stat: string, value: number, duration: number }) => {
+  socket.on('statUpdate', (data: any) => {
     if (players[data.id]) {
       if (data.stat === 'speed') {
         players[data.id].setSpeed(data.value);
         if (data.duration > 0) {
-          players[data.id].addStatusEffect('SPD', data.duration); // Add visual effect
-          setTimeout(() => {
-            if (players[data.id]) players[data.id].setSpeed(3); // Revert to default
-          }, data.duration);
+          players[data.id].addStatusEffect('SPD', data.duration);
+          setTimeout(() => { if (players[data.id]) players[data.id].setSpeed(3); }, data.duration);
         }
       } else if (data.stat === 'machineGun') {
         players[data.id].setMachineGun(true);
         players[data.id].addStatusEffect('MG', data.duration);
-        setTimeout(() => {
-          if (players[data.id]) players[data.id].setMachineGun(false);
-        }, data.duration);
+        setTimeout(() => { if (players[data.id]) players[data.id].setMachineGun(false); }, data.duration);
       }
     }
   });
 
-  socket.on('armorUpdate', (data: { id: string, value: number }) => {
-    if (players[data.id]) {
-      players[data.id].setArmor(data.value);
-    }
+  socket.on('armorUpdate', (data: any) => {
+    if (players[data.id]) players[data.id].setArmor(data.value);
   });
 }
 
@@ -384,47 +395,88 @@ function createObstacle(info: any) {
   sprite.y = info.y;
   sprite.anchor.set(0.5);
   obstacles[info.id] = sprite;
-  app.stage.addChild(sprite);
+  if (gameContainer) gameContainer.addChild(sprite);
 }
 
 function createPowerUp(pu: any) {
   const text = new PIXI.Text({
     text: pu.type,
     style: {
-      fontFamily: 'Arial',
-      fontSize: 20,
-      fontWeight: 'bold',
-      fill: getPowerUpColor(pu.type),
-      stroke: { color: 0x000000, width: 3 }
+      fontFamily: 'Arial', fontSize: 20, fontWeight: 'bold',
+      fill: getPowerUpColor(pu.type), stroke: { color: 0x000000, width: 3 }
     }
   });
   text.x = pu.x;
   text.y = pu.y;
   text.anchor.set(0.5);
   powerUps[pu.id] = text;
-  app.stage.addChild(text);
+  if (gameContainer) gameContainer.addChild(text);
 }
 
-function animatePowerUpCollection(data: { playerId: string, type: string, x: number, y: number }) {
+function createMobileControls() {
+  if (joystick && joystick.parent) joystick.parent.removeChild(joystick);
+  if (shootButton && shootButton.parent) shootButton.parent.removeChild(shootButton);
+
+  joystick = new VirtualJoystick(60);
+  joystick.x = app.screen.width - 100;
+  joystick.y = app.screen.height - 100;
+
+  shootButton = new ShootButton(50);
+  shootButton.x = 100;
+  shootButton.y = app.screen.height - 100;
+  shootButton.on('pointerdown', () => {
+    if (myId && players[myId]) {
+      players[myId].triggerShoot();
+    }
+  });
+
+  console.log('Mobile controls created. Joystick:', joystick.x, joystick.y, 'Button:', shootButton.x, shootButton.y);
+
+  if (uiContainer) {
+    uiContainer.addChild(joystick);
+    uiContainer.addChild(shootButton);
+  } else {
+    // Should always have UI container now
+    uiContainer = new PIXI.Container();
+    app.stage.addChild(uiContainer);
+    uiContainer.addChild(joystick);
+    uiContainer.addChild(shootButton);
+  }
+
+  const updatePositions = () => {
+    if (joystick) {
+      joystick.x = app.screen.width - 100;
+      joystick.y = app.screen.height - 100;
+    }
+    if (shootButton) {
+      shootButton.x = 100;
+      shootButton.y = app.screen.height - 100;
+    }
+    console.log('Mobile controls resized. Screen:', app.screen.width, app.screen.height, 'Joystick:', joystick?.x, joystick?.y);
+  };
+
+  app.renderer.on('resize', updatePositions);
+  updatePositions(); // Initial position update
+}
+
+function animatePowerUpCollection(data: any) {
   const targetPlayer = players[data.playerId];
   if (!targetPlayer) return;
 
   const text = new PIXI.Text({
     text: data.type,
     style: {
-      fontFamily: 'Arial',
-      fontSize: 20,
-      fontWeight: 'bold',
-      fill: getPowerUpColor(data.type),
-      stroke: { color: 0x000000, width: 3 }
+      fontFamily: 'Arial', fontSize: 20, fontWeight: 'bold',
+      fill: getPowerUpColor(data.type), stroke: { color: 0x000000, width: 3 }
     }
   });
   text.x = data.x;
   text.y = data.y;
   text.anchor.set(0.5);
-  app.stage.addChild(text);
+  if (gameContainer) gameContainer.addChild(text);
+  else app.stage.addChild(text);
 
-  const duration = 500; // ms
+  const duration = 500;
   const startTime = Date.now();
   const startX = data.x;
   const startY = data.y;
@@ -432,8 +484,6 @@ function animatePowerUpCollection(data: { playerId: string, type: string, x: num
   const animate = () => {
     const now = Date.now();
     const progress = Math.min((now - startTime) / duration, 1);
-
-    // Ease out cubic
     const ease = 1 - Math.pow(1 - progress, 3);
 
     if (targetPlayer && targetPlayer.parent) {
@@ -444,7 +494,7 @@ function animatePowerUpCollection(data: { playerId: string, type: string, x: num
     if (progress < 1) {
       requestAnimationFrame(animate);
     } else {
-      app.stage.removeChild(text);
+      text.destroy();
     }
   };
   requestAnimationFrame(animate);
@@ -452,11 +502,11 @@ function animatePowerUpCollection(data: { playerId: string, type: string, x: num
 
 function getPowerUpColor(type: string): number {
   switch (type) {
-    case 'S+': return 0x00ff00; // Green
-    case 'S-': return 0xff0000; // Red
-    case 'H+': return 0xff00ff; // Pink
-    case 'A': return 0x0000ff; // Blue
-    case 'M': return 0xffa500; // Orange
+    case 'S+': return 0x00ff00;
+    case 'S-': return 0xff0000;
+    case 'H+': return 0xff00ff;
+    case 'A': return 0x0000ff;
+    case 'M': return 0xffa500;
     default: return 0xffffff;
   }
 }
@@ -472,29 +522,24 @@ function addPlayer(id: string, info: any) {
       socket.emit('shoot', data);
     });
   }
-
   if (info.health !== undefined) {
     player.updateHealth(info.health, 10);
   }
-
   players[id] = player;
-  app.stage.addChild(player);
+  if (gameContainer) gameContainer.addChild(player);
 }
 
 function removePlayer(id: string) {
   if (players[id]) {
-    app.stage.removeChild(players[id]);
+    if (gameContainer) gameContainer.removeChild(players[id]);
     delete players[id];
   }
 }
 
 function checkCollision(a: any, b: any) {
-  // b is the obstacle (Sprite)
-  // a is the bullet
   const bulletRadius = 2;
   const bWidth = b.width;
   const bHeight = b.height;
-
   const bLeft = b.x - bWidth / 2;
   const bRight = b.x + bWidth / 2;
   const bTop = b.y - bHeight / 2;
@@ -502,7 +547,6 @@ function checkCollision(a: any, b: any) {
 
   const closestX = Math.max(bLeft, Math.min(a.x, bRight));
   const closestY = Math.max(bTop, Math.min(a.y, bBottom));
-
   const distanceX = a.x - closestX;
   const distanceY = a.y - closestY;
 

@@ -1,4 +1,3 @@
-
 import * as PIXI from 'pixi.js';
 import { textures } from '../utils/AssetLoader';
 
@@ -24,6 +23,10 @@ export class Player extends PIXI.Container {
     private turretSprite: PIXI.Sprite;
     private defaultBarrelTexture: PIXI.Texture;
 
+    // Mobile Input
+    public joystickInput: { x: number, y: number } = { x: 0, y: 0 };
+    public triggerHeld: boolean = false;
+
     constructor(id: string, app: PIXI.Application, isLocal: boolean, color: 'blue' | 'red') {
         super();
         this.id = id;
@@ -48,7 +51,6 @@ export class Player extends PIXI.Container {
         // Health Bar
         this.healthBar = new PIXI.Graphics();
         this.healthBar.y = -40;
-        this.addChild(this.healthBar);
         this.addChild(this.healthBar);
         this.updateHealth(10, 10);
 
@@ -100,6 +102,11 @@ export class Player extends PIXI.Container {
         }
     }
 
+    // Public wrapper for external trigger (mobile button)
+    public triggerShoot() {
+        this.shoot();
+    }
+
     public destroy(options?: any) {
         if ((this as any).cleanupInput) {
             (this as any).cleanupInput();
@@ -115,6 +122,12 @@ export class Player extends PIXI.Container {
         if (this.keys['s']) ay += 1;
         if (this.keys['a']) ax -= 1;
         if (this.keys['d']) ax += 1;
+
+        // Add Joystick Input
+        if (this.joystickInput.x !== 0 || this.joystickInput.y !== 0) {
+            ax += this.joystickInput.x;
+            ay += this.joystickInput.y;
+        }
 
         // Apply acceleration
         if (ax !== 0 || ay !== 0) {
@@ -186,7 +199,7 @@ export class Player extends PIXI.Container {
             this.turret.rotation = angle - this.rotation + Math.PI / 2; // Adjust for container rotation if any, +90deg offset for sprite
 
             // Machine Gun Shooting
-            if (this.isLocal && this.hasMachineGun && this.isMouseDown) {
+            if (this.isLocal && this.hasMachineGun && (this.isMouseDown || this.triggerHeld)) {
                 const now = Date.now();
                 if (now - this.lastShotTime > this.shotCooldown) {
                     this.shoot();
